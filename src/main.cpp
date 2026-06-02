@@ -4,16 +4,17 @@
 #include "IMU_Control.h"
 #include "ToF_Control.h"
 #include "Button_Control.h"
+#include "Motor_Control.h"
 
 // --- Global Switches ---
 #define USE_POWER_BUTTONS   true   // false = always on (easier for programming)
 #define ENABLE_SERIAL_PRINT true   // false = disable for competition performance
 
 // --- Hardware Pins ---
-const int START_PIN = 20;   // GP20
-const int STOP_PIN  = 21;   // GP21
-const int HEART_PIN = 0;    // GP0 heartbeat LED
-const int XSHUT_PIN = 6;    // GP6 → VL53L4CX XSHUT (wire this up!)
+const int START_PIN  = 20;   // GP20
+const int STOP_PIN   = 21;   // GP21
+const int HEART_PIN  = 0;    // GP0 heartbeat LED
+const int XSHUT_PIN  = 18;   // GP18 → VL53L4CX XSHUT
 
 // --- I2C Bus Pins ---
 // ToF VL53L4CX → Wire  (GP16=SDA blue, GP17=SCL yellow)
@@ -23,16 +24,21 @@ const int XSHUT_PIN = 6;    // GP6 → VL53L4CX XSHUT (wire this up!)
 #define IMU_SDA 26
 #define IMU_SCL 27
 
+// --- Motor Speed ---
+const int DRIVE_SPEED = 50;  // 70% of 255 — half speed for competition start
+
 // --- Global Objects ---
 IMU_Control    imu;
 ToF_Control    tof;
 Button_Control buttons(START_PIN, STOP_PIN);
+Motor_Control  motors;
 
 // --- State ---
-bool          powerOn     = false;
-bool          tofOK       = false;
-bool          imuOK       = false;
-unsigned long loopCounter = 0;
+bool          powerOn       = false;
+bool          tofOK         = false;
+bool          imuOK         = false;
+bool          motorsRunning = false;
+unsigned long loopCounter   = 0;
 
 // --- Data Structs ---
 struct_imu_data myIMU = {0};
@@ -43,8 +49,8 @@ unsigned long lastLogTime     = 0;
 const long    LOG_INTERVAL_MS = 200;
 
 // -------------------------------------------------------
-// Hard reset VL53L4CX via XSHUT pin
-// Equivalent to unplugging/replugging the sensor
+// Hard reset VL53L4CX via XSHUT
+// Equivalent to power cycling the sensor
 // -------------------------------------------------------
 void resetToF() {
     Serial.println("ToF: Hard reset via XSHUT...");
@@ -62,25 +68,20 @@ void setup() {
     pinMode(HEART_PIN, OUTPUT);
     Serial.println("\n=== Robot Booting ===");
 
+    // Init hardware
     buttons.begin();
+    motors.begin();  // motors stopped on begin()
 
-    // ---- Wait for GP20 start button ----
+    powerOn = true;  // keep sensors and system active
     if (USE_POWER_BUTTONS) {
-        Serial.println("Waiting for start (press GP20)...");
-        int attempts = 0;
-        while (!buttons.isStartPressed()) {
-            delay(10);
-            if (++attempts % 100 == 0) {
-                Serial.print("  Waiting... GP20: ");
-                Serial.println(digitalRead(START_PIN));
-            }
-        }
-        powerOn = true;
-        Serial.println("Power ON\n");
+        Serial.println("Ready. Press GP20 to start motors, GP21 to stop motors.");
     } else {
-        powerOn = true;
-        Serial.println("Power ON (bypass)\n");
+        motors.setSpeed(DRIVE_SPEED, DRIVE_SPEED,
+                        DRIVE_SPEED, DRIVE_SPEED);
+        motorsRunning = true;
+        Serial.println("Motors: running at 70% (button bypass)");
     }
+    Serial.println();
 
     // ---- Init I2C buses ONCE — never inside modules ----
     Wire.setSDA(TOF_SDA);
@@ -137,70 +138,68 @@ void loop() {
     loopCounter++;
     unsigned long currentTime = millis();
 
-    if (!USE_POWER_BUTTONS || powerOn) {
+    // --- Heartbeat LED blink every 1 second ---
+    static unsigned long lastBlinkTime = 0;
+    if (currentTime - lastBlinkTime >= 1000) {
+        digitalWrite(HEART_PIN, !digitalRead(HEART_PIN));
+        lastBlinkTime = currentTime;
+    }
 
-        // Heartbeat LED blink every 1 second
-        static unsigned long lastBlinkTime = 0;
-        if (currentTime - lastBlinkTime >= 1000) {
-            digitalWrite(HEART_PIN, !digitalRead(HEART_PIN));
-            lastBlinkTime = currentTime;
-        }
+    // --- Poll sensors ---
+    if (imuOK) imu.read(myIMU);
+    if (tofOK) tof.read(myToF);
 
-        // Poll sensors
-        if (imuOK) imu.read(myIMU);
-        if (tofOK) tof.read(myToF);
+    // --- Start button (motor control only) ---
+    if (USE_POWER_BUTTONS && buttons.isStartPressed() && !motorsRunning) {
+        motors.setSpeed(DRIVE_SPEED, DRIVE_SPEED,
+                        DRIVE_SPEED, DRIVE_SPEED);
+        motorsRunning = true;
+        Serial.println("Start pressed — motors running at 70%");
+    }
 
-        // Serial telemetry every LOG_INTERVAL_MS
-        if (currentTime - lastLogTime >= LOG_INTERVAL_MS) {
-            lastLogTime = currentTime;
-            if (ENABLE_SERIAL_PRINT) {
-                Serial.print("Loop: ");    Serial.print(loopCounter);
-                Serial.print(" | Time: "); Serial.print(millis() - loopStartTime);
-                Serial.print("ms | IMU:"); Serial.print(imuOK ? "OK" : "--");
-                Serial.print(" ToF:");     Serial.println(tofOK ? "OK" : "--");
+    // --- Stop button (motor control only) ---
+    if (USE_POWER_BUTTONS && buttons.isStopPressed() && motorsRunning) {
+        Serial.println("Stop pressed — stopping motors...");
+        motors.stop();
+        motorsRunning = false;
+        Serial.println("Motors stopped");
+    }
 
-                if (imuOK) {
-                    Serial.print("IMU Yaw: ");     Serial.print(myIMU.yaw,    2);
-                    Serial.print(" Pitch: ");      Serial.print(myIMU.pitch,   2);
-                    Serial.print(" Roll: ");       Serial.print(myIMU.roll,    2);
-                    Serial.print(" Acc: ");
-                    Serial.print(myIMU.accX, 2);  Serial.print(",");
-                    Serial.print(myIMU.accY, 2);  Serial.print(",");
-                    Serial.print(myIMU.accZ, 2);
-                    Serial.print(" Gyro: ");
-                    Serial.print(myIMU.gyroX, 2); Serial.print(",");
-                    Serial.print(myIMU.gyroY, 2); Serial.print(",");
-                    Serial.print(myIMU.gyroZ, 2);
-                    Serial.print(" Acc#: ");       Serial.println(myIMU.accuracy);
-                }
+    // --- Serial telemetry ---
+    if (currentTime - lastLogTime >= LOG_INTERVAL_MS) {
+        lastLogTime = currentTime;
+        if (ENABLE_SERIAL_PRINT) {
+            Serial.print("Loop: ");    Serial.print(loopCounter);
+            Serial.print(" | Time: "); Serial.print(millis() - loopStartTime);
+            Serial.print("ms | IMU:"); Serial.print(imuOK ? "OK" : "--");
+            Serial.print(" ToF:");     Serial.println(tofOK ? "OK" : "--");
 
-                if (tofOK) {
-                    Serial.print("ToF count: "); Serial.print(myToF.count);
-                    if (myToF.count > 0) {
-                        Serial.print(" Dist=");
-                        Serial.print(myToF.targets[0].distance);
-                        Serial.print("mm St=");
-                        Serial.print(myToF.targets[0].status);
-                    }
-                    Serial.println();
+            if (imuOK) {
+                Serial.print("IMU Yaw: ");     Serial.print(myIMU.yaw,    2);
+                Serial.print(" Pitch: ");      Serial.print(myIMU.pitch,   2);
+                Serial.print(" Roll: ");       Serial.print(myIMU.roll,    2);
+                Serial.print(" Acc: ");
+                Serial.print(myIMU.accX, 2);  Serial.print(",");
+                Serial.print(myIMU.accY, 2);  Serial.print(",");
+                Serial.print(myIMU.accZ, 2);
+                Serial.print(" Gyro: ");
+                Serial.print(myIMU.gyroX, 2); Serial.print(",");
+                Serial.print(myIMU.gyroY, 2); Serial.print(",");
+                Serial.print(myIMU.gyroZ, 2);
+                Serial.print(" Acc#: ");       Serial.println(myIMU.accuracy);
+            }
+
+            if (tofOK) {
+                Serial.print("ToF count: "); Serial.print(myToF.count);
+                if (myToF.count > 0) {
+                    Serial.print(" Dist=");
+                    Serial.print(myToF.targets[0].distance);
+                    Serial.print("mm St=");
+                    Serial.print(myToF.targets[0].status);
                 }
                 Serial.println();
             }
-        }
-
-        // Stop button check
-        if (USE_POWER_BUTTONS && buttons.isStopPressed()) {
-            powerOn = false;
-            Serial.println("Power OFF");
-            digitalWrite(HEART_PIN, LOW);
-        }
-
-    } else {
-        // Powered off state
-        digitalWrite(HEART_PIN, LOW);
-        if (buttons.isStartPressed()) {
-            powerOn = true;
-            Serial.println("Power ON");
+            Serial.println();
         }
     }
 }
