@@ -3,34 +3,22 @@
 
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
+#include "Data_Structures.h"
 
-// Tier 1: Primary high-level operational modes (LED 1)
-enum class SystemState {
-    BOOT_DIAGNOSTIC,
-    IDLE,
-    RUNNING,
-    CRITICAL_FAULT
-};
-
-// Tier 2: Modular sub-statuses or hardware errors (LED 2)
-enum class SubStatus {
-    NONE_OK,            // Everything normal
-    ERROR_IMU,          // IMU initialization failed
-    ERROR_TOF,          // Time of Flight sensor down
-    ERROR_BOTH_SENSORS, // Both critical sensors down
-    RUN_TURNING_LEFT,   // Robot actively executing a left sweep
-    RUN_TURNING_RIGHT,  // Robot actively executing a right sweep
-    RUN_LINE_LOST       // Main line dropped out of camera frame
-};
-
-class RobotStatus {
+class Robot_Status {
 public:
-    RobotStatus(uint8_t pin = 23, uint8_t numLeds = 2);
+    // Configured for the Cytron Motion 2350 Pro: NeoPixel data pin is GP23 driving 2 LEDs
+    Robot_Status(uint8_t pin = 23, uint8_t numLeds = 2);
     
     void begin();
-    void setSystemState(SystemState state);
-    void setSubStatus(SubStatus sub);
-    void update(); // Handles non-blocking blink rhythms
+    void update(); // Must be called continuously inside loop() to keep animations non-blocking
+    
+    // Core State Command Configuration Transaction Method
+    void changeState(SystemState mainState, SubStatus sub = SubStatus::NONE_OK);
+    
+    // Read-Only State Query Getters for Muscles / Controllers
+    SystemState getState() const { return _mainState; }
+    SubStatus getSubStatus() const { return _subStatus; }
 
 private:
     Adafruit_NeoPixel _pixels;
@@ -40,6 +28,7 @@ private:
     unsigned long _lastToggleTime;
     bool _flashToggleState;
     
+    // Internal hardware paint translation wrapper method
     void setPixelColorRGB(uint8_t index, uint8_t r, uint8_t g, uint8_t b);
 };
 
