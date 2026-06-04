@@ -9,7 +9,7 @@ const int PIN_GRIP_ARM  = 4;  // GP4: Ball Handler Lift Arm
 const int PIN_GRIP_CLAW = 5;  // GP5: Ball Handler Claw Jaws
 
 struct GripperJoint {
-    uint8_t pin;
+    uint8_t pin;       // Dedicated tracking pin
     int minAngle;
     int maxAngle;
     int defaultAngle;

@@ -7,20 +7,30 @@ Camera_Mount::Camera_Mount() {
 }
 
 void Camera_Mount::begin() {
-    _neck.instance.attach(_neck.pin);
-    _base.instance.attach(_base.pin);
-
-    // Center everything on boot
+    // We do NOT permanently attach here anymore.
+    // Instead, we let moveJointSafely handle it on demand.
     moveJointSafely(_neck, _neck.defaultAngle);
     moveJointSafely(_base, _base.defaultAngle);
     
-    Serial.println("Camera_Mount: Line Tracing Pan/Tilt Servos Ready.");
+    Serial.println("Camera_Mount: Pan/Tilt Servos Initialized (Sleeping).");
 }
 
 void Camera_Mount::moveJointSafely(MountJoint& joint, int targetAngle) {
     int safeAngle = constrain(targetAngle, joint.minAngle, joint.maxAngle);
     joint.currentAngle = safeAngle;
-    joint.instance.write(safeAngle);
+    
+    // 1. Wake up the muscle channel
+    joint.instance.attach(joint.pin); 
+    
+    // 2. Command the movement
+    joint.instance.write(safeAngle);   
+    
+    // 3. Give the physical gears time to complete the sweep
+    // (150ms-250ms is the sweet spot for a standard 90-degree MG90S travel)
+    delay(200); 
+    
+    // 4. Cut the power pulse to make it dead silent!
+    joint.instance.detach();           
 }
 
 void Camera_Mount::setNeck(String position) {

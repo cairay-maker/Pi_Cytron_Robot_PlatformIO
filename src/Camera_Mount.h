@@ -10,7 +10,7 @@ const int PIN_CAM1_NECK = 2;  // GP2: Camera 1 Tilt (Up/Down)
 const int PIN_CAM1_BASE = 3;  // GP3: Camera 1 Pan (Left/Right)
 
 struct MountJoint {
-    uint8_t pin;
+    uint8_t pin;       // Needs to be explicit
     int minAngle;
     int maxAngle;
     int defaultAngle;
