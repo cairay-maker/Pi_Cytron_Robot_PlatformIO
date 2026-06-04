@@ -7,8 +7,9 @@
 #include "Motor_Control.h"
 #include "Robot_Status.h"
 #include "Drive_Controller.h"
+#include "Camera_Mount.h"
 #include "Ball_Handler.h"
-#include "Simulation_Map.h" // Updated naming convention target
+#include "Simulation_Map.h" 
 
 // =======================================================
 // CONFIGURATION MODES
@@ -40,8 +41,9 @@ Motor_Control  motors;
 // Architecture Modules
 Robot_Status     status;
 Drive_Controller driver(motors);
-Ball_Handler     ballHandler;
-Simulation_Map   sim(status); // Instantiated cleanly with singular name
+Camera_Mount     camMount;     // System Area: Owned by Lillian
+Ball_Handler     ballHandler;  // System Area: Owned by Lexi & Daniel
+Simulation_Map   sim(status); 
 
 // --- Core System State ---
 bool systemRunning = false;
@@ -83,6 +85,7 @@ void setup() {
     buttons.begin();
     motors.begin();  // Standard safety stop applied automatically
     status.begin();
+    camMount.begin();    
     ballHandler.begin();
 
     // 2. Set indicators to visual diagnostic color (LED 1: Yellow)
@@ -190,8 +193,29 @@ void loop() {
         }
     }
 
+    // --- On-The-Fly Serial Command Interceptor for Diagnostics ---
+    // Direct command routing for desk testing (e.g., "NECK:LOOK_DOWN", "CLAW:CLAW_CLOSE")
+    if (Serial.available() > 0) {
+        String debugCmd = Serial.readStringUntil('\n');
+        debugCmd.trim(); debugCmd.toUpperCase();
+        
+        int colonIndex = debugCmd.indexOf(':');
+        if (colonIndex != -1) {
+            String joint = debugCmd.substring(0, colonIndex);
+            String value = debugCmd.substring(colonIndex + 1);
+            
+            // Pass parsing tokens downstream to respective physical structural owners
+            if (joint == "NECK" || joint == "BASE") {
+                camMount.handleDebugSerial(joint, value);
+            } else if (joint == "ARM" || joint == "CLAW") {
+                ballHandler.handleDebugSerial(joint, value);
+            }
+        }
+    }
+
     // --- Active Logic Controller Path Routing ---
     if (systemRunning) {
+        
         #if (SIMULATION_MODE == true)
             // ===================================================
             // SANDBOX EXECUTION ROUTE (Bypasses Sensor Reading)
@@ -211,8 +235,9 @@ void loop() {
         #endif
 
         // --- Hardware Muscle Execution Handlers ---
-        driver.executeTrajectory(status.getState(), status.getSubStatus());
-        ballHandler.processRescueTask(status.getSubStatus());
+        camMount.adjustGazeForState(status.getState(), status.getSubStatus()); // Camera Mount tracks conditions automatically
+        driver.executeTrajectory(status.getState(), status.getSubStatus());    // Core wheel layouts move
+        ballHandler.processRescueTask(status.getSubStatus());                  // Payload actions handle sorting tasks
 
     } else {
         // Enforce safe static posture if process loop is deactivated
