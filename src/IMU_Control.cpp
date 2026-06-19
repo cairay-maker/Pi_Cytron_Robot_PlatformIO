@@ -21,12 +21,19 @@ bool IMU_Control::read(struct_imu_data& data) {
     if (!_bno.getSensorEvent(&event)) return false;
 
     switch (event.sensorId) {
-        case SH2_ROTATION_VECTOR:
-            data.yaw      = event.un.rotationVector.real;
-            data.pitch    = event.un.rotationVector.i;
-            data.roll     = event.un.rotationVector.j;
+        case SH2_ROTATION_VECTOR: {
+            float qr = event.un.rotationVector.real;
+            float qi = event.un.rotationVector.i;
+            float qj = event.un.rotationVector.j;
+            float qk = event.un.rotationVector.k;
+            
+            // Convert Quaternion to Euler Angles (Degrees)
+            data.yaw      = atan2(2.0 * (qr * qk + qi * qj), 1.0 - 2.0 * (qj * qj + qk * qk)) * 180.0 / PI;
+            data.pitch    = asin(2.0 * (qr * qj - qk * qi)) * 180.0 / PI;
+            data.roll     = atan2(2.0 * (qr * qi + qj * qk), 1.0 - 2.0 * (qi * qi + qj * qj)) * 180.0 / PI;
             data.accuracy = event.un.rotationVector.accuracy;
             break;
+        }
         case SH2_ACCELEROMETER:
             data.accX = event.un.accelerometer.x;
             data.accY = event.un.accelerometer.y;

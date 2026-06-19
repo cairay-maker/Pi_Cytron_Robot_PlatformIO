@@ -10,25 +10,18 @@
 #include "Camera_Mount.h"
 #include "Ball_Handler.h"
 #include "Simulation_Map.h" 
+#include "Serial_Control.h"
+#include "Config.h"
 
 // =======================================================
 // CONFIGURATION MODES
 // =======================================================
-#define SIMULATION_MODE     true   // true = Runs virtual timeline sandbox; false = Live track execution
-#define USE_POWER_BUTTONS   true   // true = Must press GP20 to start motor routines
-#define ENABLE_SERIAL_PRINT true   // true = Output telemetry data to console
+bool cfgSimMode            = DEFAULT_SIM_MODE;
+bool cfgRequireStartButton = DEFAULT_REQUIRE_START_BUTTON;
+bool cfgEnablePrint        = DEFAULT_ENABLE_PRINT;
+bool cfgMotorEnable        = DEFAULT_MOTOR_ENABLE;
+bool cfgAvoidRight         = DEFAULT_AVOID_RIGHT;
 
-// --- Hardware Pins ---
-const int START_PIN = 20;   // GP20 Start Button
-const int STOP_PIN  = 21;   // GP21 Stop Button
-const int HEART_PIN = 0;    // GP0 Heartbeat onboard LED
-const int XSHUT_PIN = 18;   // GP18 Hardware Shutdown pin for VL53L4CX
-
-// --- I2C Bus Pins ---
-#define TOF_SDA 16
-#define TOF_SCL 17
-#define IMU_SDA 26
-#define IMU_SCL 27
 
 // =======================================================
 // GLOBAL SYSTEM OBJECTS
@@ -40,24 +33,32 @@ Motor_Control  motors;
 
 // Architecture Modules
 Robot_Status     status;
-Drive_Controller driver(motors);
+Drive_Controller driver(motors, imu);
 Camera_Mount     camMount;     // System Area: Owned by Lillian
 Ball_Handler     ballHandler;  // System Area: Owned by Lexi & Daniel
 Simulation_Map   sim(status); 
+Serial_Control   serialControl(camMount, ballHandler, motors, cfgSimMode, cfgRequireStartButton, cfgEnablePrint, cfgMotorEnable);
 
 // --- Core System State ---
 bool systemRunning = false;
+bool isPaused      = false;
 bool imuOK         = false;
 bool tofOK         = false;
 unsigned long simStartTime = 0;
+unsigned long simPauseOffset = 0;
 
 // --- Data Buffers ---
 struct_imu_data myIMU = {0};
 struct_tof_data myToF = {0};
+unsigned long lastToFSuccessTime = 0;
+unsigned long lastAvoidanceEndTime = 0;
 
 // --- Telemetry Log Interval ---
 unsigned long lastLogTime     = 0;
 const long    LOG_INTERVAL_MS = 250;
+
+// --- Telemetry serial log counter ---
+unsigned long serialLogCounter = 0;
 
 // -------------------------------------------------------
 // Hardware Power Cycle for VL53L4CX ToF Boot Safety
@@ -68,8 +69,9 @@ void resetToF() {
     digitalWrite(XSHUT_PIN, LOW);
     delay(10);
     digitalWrite(XSHUT_PIN, HIGH);
-    delay(10);
-    pinMode(XSHUT_PIN, INPUT);
+    // Increase delay to give the sensor firmware plenty of time to boot, 
+    // and keep the pin as an active HIGH output so it strongly resists electrical noise.
+    delay(50); 
 }
 
 // =======================================================
@@ -77,16 +79,22 @@ void resetToF() {
 // =======================================================
 void setup() {
     Serial.begin(115200);
-    delay(2000); // Guard window for serial monitor to connect
+    
+    // Smart guard window: Wait for Serial Monitor to connect, with a 5-second timeout
+    // so it doesn't freeze the robot if you power it on from a battery without a USB cable.
+    unsigned long startWait = millis();
+    while (!Serial && millis() - startWait < 5000) { delay(10); }
+    
     pinMode(HEART_PIN, OUTPUT);
     Serial.println("\n=== Team Leli Robot Booting ===");
 
-    // 1. Fire up baseline UI mechanical structures
+    // 1. Fire up PANline UI mechanical structures
     buttons.begin();
     motors.begin();  // Standard safety stop applied automatically
     status.begin();
     camMount.begin();    
     ballHandler.begin();
+    serialControl.begin();
 
     // 2. Set indicators to visual diagnostic color (LED 1: Yellow)
     status.changeState(SystemState::BOOT_DIAGNOSTIC);
@@ -142,14 +150,17 @@ void setup() {
         Serial.println("WARNING: Initializing with limited hardware peripherals.");
     }
     
-    if (!USE_POWER_BUTTONS) {
+    // Start the watchdog clock right before entering the main loop
+    lastToFSuccessTime = millis();
+    
+    if (!cfgRequireStartButton) {
         systemRunning = true;
         simStartTime = millis();
-        #if (SIMULATION_MODE == true)
+        if (cfgSimMode) {
             sim.initScenario(TestScenario::FULL_COMPETITION_RUN, simStartTime);
-        #else
+        } else {
             status.changeState(SystemState::LINE_TRACING, SubStatus::TRACE_NORMAL);
-        #endif
+        }
         Serial.println("Button bypass active: Engine sequences running.");
     }
 }
@@ -169,46 +180,115 @@ void loop() {
     }
 
     // --- Poll Physical Control Interfaces ---
-    if (USE_POWER_BUTTONS) {
-        if (buttons.isStartPressed() && !systemRunning) {
+    if (cfgRequireStartButton) {
+        bool physStartPressed = buttons.isStartPressed();
+        bool physStopPressed  = buttons.isStopPressed();
+        bool virtStartPressed = serialControl.isVirtualStartPressed();
+        bool virtStopPressed  = serialControl.isVirtualStopPressed();
+
+        // Use STOP button during standby to toggle Left/Right avoidance
+        if ((physStopPressed || virtStopPressed) && !systemRunning) {
+            cfgAvoidRight = !cfgAvoidRight;
+            Serial.print(">>> Avoidance Direction Toggled! Now dodging: ");
+            Serial.println(cfgAvoidRight ? "RIGHT" : "LEFT");
+        }
+
+        // START / RESUME LOGIC
+        if ((physStartPressed || virtStartPressed) && !systemRunning) {
             systemRunning = true;
-            simStartTime = currentTime; // Zero out timeline clock framework anchor
+            tof.resetConfidence();
             
-            #if (SIMULATION_MODE == true)
+            if (virtStartPressed && isPaused) {
+                // Resume from pause via RUN:ON
+                isPaused = false;
+                simStartTime = currentTime - simPauseOffset;
+                Serial.println("RUN:ON received -> Resuming execution.");
+            } else {
+                // Fresh start via physical GP20 Start, or fresh RUN:ON
+                isPaused = false;
+                simPauseOffset = 0;
+                simStartTime = currentTime; // Zero out timeline clock framework anchor
+                Serial.println(physStartPressed ? "START pressed -> Fresh Run Live." : "RUN:ON received -> Fresh Run Live.");
+            }
+
+            if (cfgSimMode) {
                 // CHOOSE TEST SCENARIO HERE: 
                 // Options: TestScenario::FULL_COMPETITION_RUN, TestScenario::RAMP_CHALLENGE, TestScenario::RESCUE_ZONE_BALL_SORT
                 sim.initScenario(TestScenario::FULL_COMPETITION_RUN, simStartTime);
-                Serial.println("START pressed -> Execution Sandbox Live.");
-            #else
+            } else {
                 status.changeState(SystemState::LINE_TRACING, SubStatus::TRACE_NORMAL);
-                Serial.println("START pressed -> Running Real Track Routine.");
-            #endif
+            }
         }
 
-        if (buttons.isStopPressed() && systemRunning) {
+        // KILL / PAUSE LOGIC
+        if ((physStopPressed || virtStopPressed) && systemRunning) {
             systemRunning = false;
-            status.changeState(SystemState::IDLE_STANDBY, SubStatus::NONE_OK);
             motors.stop();
-            Serial.println("STOP pressed -> Hardware execution halted safely.");
+            status.changeState(SystemState::IDLE_STANDBY, SubStatus::NONE_OK);
+            
+            if (physStopPressed) {
+                // Hard kill via GP21
+                isPaused = false;
+                simPauseOffset = 0;
+                Serial.println("STOP pressed -> Hardware execution killed safely.");
+            } else if (virtStopPressed) {
+                // Pause via RUN:OFF
+                isPaused = true;
+                simPauseOffset = currentTime - simStartTime;
+                Serial.println("RUN:OFF received -> Hardware execution PAUSED.");
+            }
         }
     }
 
     // --- On-The-Fly Serial Command Interceptor for Diagnostics ---
-    // Direct command routing for desk testing (e.g., "NECK:LOOK_DOWN", "CLAW:CLAW_CLOSE")
-    if (Serial.available() > 0) {
-        String debugCmd = Serial.readStringUntil('\n');
-        debugCmd.trim(); debugCmd.toUpperCase();
-        
-        int colonIndex = debugCmd.indexOf(':');
-        if (colonIndex != -1) {
-            String joint = debugCmd.substring(0, colonIndex);
-            String value = debugCmd.substring(colonIndex + 1);
-            
-            // Pass parsing tokens downstream to respective physical structural owners
-            if (joint == "NECK" || joint == "BASE") {
-                camMount.handleDebugSerial(joint, value);
-            } else if (joint == "ARM" || joint == "CLAW") {
-                ballHandler.handleDebugSerial(joint, value);
+    serialControl.update();
+
+    // --- Active Sensor Harvesting (Always Live for Telemetry) ---
+    if (!cfgSimMode) {
+        if (imuOK) imu.read(myIMU);
+        if (tofOK) {
+            if (tof.read(myToF)) {
+                lastToFSuccessTime = currentTime; // Ping the watchdog: We are alive!
+                
+                // --- ToF Obstacle Debouncing Filter ---
+                if (systemRunning && tof.evaluateObstacle(myToF, currentTime, lastAvoidanceEndTime)) {
+                    Serial.print(">>> OBSTACLE DETECTED (<= ");
+                    Serial.print(OBSTACLE_DISTANCE_THRESHOLD_MM);
+                    Serial.println("mm)! Triggering Avoidance Maneuver...");
+                        
+                    status.changeState(SystemState::LINE_TRACING, SubStatus::TRACE_OBSTACLE_AVOIDANCE);
+                    status.update(); // Flush the visual indicator immediately
+                        
+                    bool maneuverCompleted = driver.executeAvoidanceManeuver(cfgAvoidRight);
+                        
+                    if (!maneuverCompleted) {
+                        // GP21 was pressed DURING the avoidance maneuver. 
+                        // Ensure the system completely disarms.
+                        systemRunning = false;
+                        isPaused = false;
+                        simPauseOffset = 0;
+                        status.changeState(SystemState::IDLE_STANDBY, SubStatus::NONE_OK);
+                    } else {
+                        lastAvoidanceEndTime = millis(); // Start the cooldown period!
+                        Serial.println(">>> AVOIDANCE COMPLETE: ToF Sensor ignoring targets for 2.5s to clear obstacle.");
+                        lastToFSuccessTime = millis(); // Suppress the watchdog
+                        status.changeState(SystemState::LINE_TRACING, SubStatus::TRACE_NORMAL);
+                    }
+                }
+            } else if (currentTime - lastToFSuccessTime > 1000) {
+                // WATCHDOG TRIPPED: 1 second passed with no fresh data!
+                Serial.println(">>> WATCHDOG: ToF sensor unresponsive! Executing live auto-recovery...");
+                myToF.count = 0; // Clear the stale 196mm data so it disappears from the monitor
+                tofOK = false;
+                
+                resetToF(); // Yank the hardware pin to force a physical reboot
+                if (tof.begin(Wire)) {
+                    tofOK = true;
+                    Serial.println(">>> WATCHDOG: ToF Auto-Recovery SUCCESS!");
+                } else {
+                    Serial.println(">>> WATCHDOG: ToF Auto-Recovery FAILED. Retrying in 1s...");
+                }
+                lastToFSuccessTime = currentTime; // Reset the timer to space out recovery attempts
             }
         }
     }
@@ -216,27 +296,29 @@ void loop() {
     // --- Active Logic Controller Path Routing ---
     if (systemRunning) {
         
-        #if (SIMULATION_MODE == true)
+        if (cfgSimMode) {
             // ===================================================
             // SANDBOX EXECUTION ROUTE (Bypasses Sensor Reading)
             // ===================================================
             sim.update(currentTime);
             
-        #else
+        } else {
             // ===================================================
             // REAL MAP RUN ROUTE (Active Hardware Interception)
             // ===================================================
-            if (imuOK) imu.read(myIMU);
-            if (tofOK) tof.read(myToF);
 
             // Real track evaluation loops and Python Serial parsers interface here:
             // Example:
             // if (Serial.available()) { ... status.changeState(...) }
-        #endif
+        }
 
         // --- Hardware Muscle Execution Handlers ---
-        camMount.adjustGazeForState(status.getState(), status.getSubStatus()); // Camera Mount tracks conditions automatically
-        driver.executeTrajectory(status.getState(), status.getSubStatus());    // Core wheel layouts move
+        if (cfgMotorEnable) {
+            driver.executeTrajectory(status.getState(), status.getSubStatus()); // Core wheel layouts move
+        } else {
+            motors.stop(); // Safe static posture for desk/manual testing
+        }
+        
         ballHandler.processRescueTask(status.getSubStatus());                  // Payload actions handle sorting tasks
 
     } else {
@@ -245,18 +327,21 @@ void loop() {
     }
 
     // --- Serial Stream Monitor Telemetry Output ---
-    if (ENABLE_SERIAL_PRINT && (currentTime - lastLogTime >= LOG_INTERVAL_MS)) {
+    if (cfgEnablePrint && (currentTime - lastLogTime >= LOG_INTERVAL_MS)) {
         lastLogTime = currentTime;
+        serialLogCounter++;
         
-        Serial.print("MODE: [");
-        if (SIMULATION_MODE) Serial.print("SIMULATION");
+        Serial.print("Log #");
+        Serial.print(serialLogCounter);
+        Serial.print(" | MODE: [");
+        if (cfgSimMode) Serial.print("SIMULATION");
         else Serial.print("LIVE_TRACK");
         Serial.print("] | Master State ID: ");
         Serial.print((int)status.getState());
         Serial.print(" | Sub-Action Focus Target: ");
         Serial.println((int)status.getSubStatus());
 
-        #if (SIMULATION_MODE == false)
+        if (!cfgSimMode) {
             // Output sensor matrices only during live execution tracks to save CPU execution cycles
             if (imuOK) {
                 Serial.print("   -> IMU Yaw: "); Serial.print(myIMU.yaw, 2);
@@ -268,6 +353,6 @@ void loop() {
                 Serial.print(myToF.targets[0].distance); 
                 Serial.println("mm");
             }
-        #endif
+        }
     }
 }

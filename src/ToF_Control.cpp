@@ -1,4 +1,5 @@
 #include "ToF_Control.h"
+#include "Config.h"
 
 // Constructed globally before setup() — critical for the VL53L4CX underlying library
 // Binds to Wire (GP16/17) using default shutdown pin parameters (-1)
@@ -52,4 +53,38 @@ bool ToF_Control::read(struct_tof_data& data) {
     }
     
     return false; // Return false smoothly if data isn't ready yet, preventing loop lag
+}
+
+bool ToF_Control::evaluateObstacle(const struct_tof_data& data, unsigned long currentTime, unsigned long lastAvoidanceEndTime) {
+    // If we are in the 2.5s blind cooldown period, ignore targets and reset confidence
+    if (currentTime - lastAvoidanceEndTime <= 2500) {
+        _confidenceCount = 0;
+        return false;
+    }
+
+    if (data.count > 0) {
+        int16_t currentDistance = data.targets[0].distance;
+        
+        // Filter out hardware errors and out-of-range anomalies (e.g., 0 or 65535)
+        if (currentDistance >= TOF_MIN_VALID_DIST_MM && currentDistance <= TOF_MAX_VALID_DIST_MM) {
+            if (currentDistance <= OBSTACLE_DISTANCE_THRESHOLD_MM) {
+                _confidenceCount++;
+            } else {
+                _confidenceCount = 0; // Clear if path opens up
+            }
+        } else {
+            // Ghost reading or error state: reset confidence counter
+            _confidenceCount = 0; 
+        }
+        
+        if (_confidenceCount >= OBSTACLE_DEBOUNCE_COUNT) {
+            _confidenceCount = 0; // Auto-reset counter for the next obstacle
+            return true;
+        }
+    }
+    return false;
+}
+
+void ToF_Control::resetConfidence() {
+    _confidenceCount = 0;
 }

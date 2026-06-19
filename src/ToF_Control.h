@@ -15,6 +15,13 @@ public:
     ToF_Control();
     bool begin(TwoWire& wire);  // pass Wire or Wire1
     bool read(struct_tof_data& data);
+    
+    // Data evaluation wrapper to keep main.cpp clean
+    bool evaluateObstacle(const struct_tof_data& data, unsigned long currentTime, unsigned long lastAvoidanceEndTime);
+    void resetConfidence();
+
+private:
+    int _confidenceCount = 0;
 };
 
 #endif
