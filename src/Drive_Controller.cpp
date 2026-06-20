@@ -3,7 +3,7 @@
 
 Drive_Controller::Drive_Controller(Motor_Control& motorRef, IMU_Control& imuRef) : _motors(motorRef), _imu(imuRef) {}
 
-void Drive_Controller::executeTrajectory(SystemState mainState, SubStatus subState) {
+void Drive_Controller::executeTrajectory(SystemState mainState, SubStatus subState, int overrideSpeedL, int overrideSpeedR) {
     if (mainState == SystemState::IDLE_STANDBY || mainState == SystemState::CRITICAL_FAULT) {
         _motors.stop();
         return;
@@ -12,8 +12,12 @@ void Drive_Controller::executeTrajectory(SystemState mainState, SubStatus subSta
     if (mainState == SystemState::LINE_TRACING) {
         switch (subState) {
             case SubStatus::TRACE_NORMAL:
-                // Base balanced tracking speed
-                _motors.setSpeed(BASE_TRACKING_SPEED, BASE_TRACKING_SPEED, BASE_TRACKING_SPEED, BASE_TRACKING_SPEED);
+                // Base balanced tracking speed OR override speeds from Vision Line Processor
+                if (overrideSpeedL != 0 || overrideSpeedR != 0) {
+                    _motors.setSpeed(overrideSpeedL, overrideSpeedR, overrideSpeedL, overrideSpeedR);
+                } else {
+                    _motors.setSpeed(BASE_TRACKING_SPEED, BASE_TRACKING_SPEED, BASE_TRACKING_SPEED, BASE_TRACKING_SPEED);
+                }
                 break;
 
             case SubStatus::TRACE_SHARP_TURN_BRAKE:
@@ -66,6 +70,7 @@ bool Drive_Controller::safeDelay(unsigned long ms) {
             return false; // Signal to abort
         }
         delay(10); // Small yield to maintain responsiveness
+        yield();   // CRITICAL: Keep USB alive during blocking delay
     }
     return true;
 }
@@ -104,6 +109,7 @@ bool Drive_Controller::executeAvoidanceManeuver(bool avoidRight) {
     unsigned long arcStartTime = millis();
     // Increased timeout from 10s to 15s to guarantee it finishes the 180-degree sweep even on low battery
     while (millis() - arcStartTime < 15000) {
+        yield(); // CRITICAL: Keep USB alive during 15-second blocking arc
         if (digitalRead(STOP_PIN) == LOW) {
             _motors.stop();
             return false;
@@ -160,6 +166,8 @@ bool Drive_Controller::turnByIMU(float targetAngleDelta) {
     unsigned long turnStartTime = millis();
     // Blocking turn with an 8-second timeout so a bumped wire doesn't make the robot spin forever
     while (millis() - turnStartTime < 8000) {
+        yield(); // CRITICAL: Keep USB alive during 8-second blocking turn
+        
         // Abort turn if STOP button is pressed
         if (digitalRead(STOP_PIN) == LOW) {
             _motors.stop();

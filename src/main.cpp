@@ -12,6 +12,8 @@
 #include "Simulation_Map.h" 
 #include "Serial_Control.h"
 #include "Config.h"
+#include "RPi_Interface.h"
+#include "Line_Processor.h"
 
 // =======================================================
 // CONFIGURATION MODES
@@ -38,6 +40,10 @@ Camera_Mount     camMount;     // System Area: Owned by Lillian
 Ball_Handler     ballHandler;  // System Area: Owned by Lexi & Daniel
 Simulation_Map   sim(status); 
 Serial_Control   serialControl(camMount, ballHandler, motors, cfgSimMode, cfgRequireStartButton, cfgEnablePrint, cfgMotorEnable);
+
+// Vision Integration
+RPi_Interface    rpiInterface;
+Line_Processor   lineProcessor(rpiInterface);
 
 // --- Core System State ---
 bool systemRunning = false;
@@ -95,6 +101,11 @@ void setup() {
     camMount.begin();    
     ballHandler.begin();
     serialControl.begin();
+    rpiInterface.begin();
+    
+    // Link modules
+    serialControl.setLineProcessorRef(&lineProcessor);
+    serialControl.setRPiInterfaceRef(&rpiInterface);
 
     // 2. Set indicators to visual diagnostic color (LED 1: Yellow)
     status.changeState(SystemState::BOOT_DIAGNOSTIC);
@@ -118,7 +129,8 @@ void setup() {
     for (int i = 0; i < 3; i++) {
         resetToF();
         delay(100);
-        if (tof.begin(Wire)) {
+        // BYPASS: Temporarily skip ToF hardware init to prevent I2C hangs
+        if (false && tof.begin(Wire)) {
             tofOK = true;
             Serial.println("ToF Init Match -> SUCCESS\n");
             break;
@@ -130,7 +142,8 @@ void setup() {
     // 5. IMU Boot Checklist Sequence (3 Retries)
     Serial.println("Initializing IMU Sensor Module...");
     for (int i = 0; i < 3; i++) {
-        if (imu.begin(Wire1)) {
+        // BYPASS: Temporarily skip IMU hardware init to prevent I2C hangs
+        if (false && imu.begin(Wire1)) {
             imuOK = true;
             Serial.println("IMU Init Match -> SUCCESS\n");
             break;
@@ -244,6 +257,8 @@ void loop() {
     serialControl.update();
 
     // --- Active Sensor Harvesting (Always Live for Telemetry) ---
+    rpiInterface.update(); // Harvest high-speed vision data from UART1
+
     if (!cfgSimMode) {
         if (imuOK) imu.read(myIMU);
         if (tofOK) {
@@ -314,7 +329,14 @@ void loop() {
 
         // --- Hardware Muscle Execution Handlers ---
         if (cfgMotorEnable) {
-            driver.executeTrajectory(status.getState(), status.getSubStatus()); // Core wheel layouts move
+            if (status.getState() == SystemState::LINE_TRACING && status.getSubStatus() == SubStatus::TRACE_NORMAL) {
+                // Calculate Vision/PID requested speeds
+                MotorOutput pdOutput = lineProcessor.compute(status.getState(), status.getSubStatus());
+                driver.executeTrajectory(status.getState(), status.getSubStatus(), pdOutput.leftSpeed, pdOutput.rightSpeed);
+            } else {
+                // Pre-programmed maneuver
+                driver.executeTrajectory(status.getState(), status.getSubStatus()); 
+            }
         } else {
             motors.stop(); // Safe static posture for desk/manual testing
         }
@@ -329,30 +351,41 @@ void loop() {
     // --- Serial Stream Monitor Telemetry Output ---
     if (cfgEnablePrint && (currentTime - lastLogTime >= LOG_INTERVAL_MS)) {
         lastLogTime = currentTime;
-        serialLogCounter++;
         
-        Serial.print("Log #");
-        Serial.print(serialLogCounter);
-        Serial.print(" | MODE: [");
-        if (cfgSimMode) Serial.print("SIMULATION");
-        else Serial.print("LIVE_TRACK");
-        Serial.print("] | Master State ID: ");
-        Serial.print((int)status.getState());
-        Serial.print(" | Sub-Action Focus Target: ");
-        Serial.println((int)status.getSubStatus());
+        // Prevent USB stack from hanging if the computer isn't reading fast enough
+        if (Serial && Serial.availableForWrite() > 64) {
+            serialLogCounter++;
+            
+            Serial.print("Log #");
+            Serial.print(serialLogCounter);
+            Serial.print(" | MODE: [");
+            if (cfgSimMode) Serial.print("SIMULATION");
+            else Serial.print("LIVE_TRACK");
+            Serial.print("] | Master State ID: ");
+            Serial.print((int)status.getState());
+            Serial.print(" | Sub-Action Focus Target: ");
+            Serial.println((int)status.getSubStatus());
 
-        if (!cfgSimMode) {
-            // Output sensor matrices only during live execution tracks to save CPU execution cycles
-            if (imuOK) {
-                Serial.print("   -> IMU Yaw: "); Serial.print(myIMU.yaw, 2);
-                Serial.print(" Pitch: ");        Serial.print(myIMU.pitch, 2);
-                Serial.print(" AccY: ");         Serial.println(myIMU.accY, 2);
-            }
-            if (tofOK && myToF.count > 0) {
-                Serial.print("   -> ToF Tracking Distance: "); 
-                Serial.print(myToF.targets[0].distance); 
-                Serial.println("mm");
+            if (!cfgSimMode) {
+                // Output sensor matrices only during live execution tracks
+                if (imuOK) {
+                    Serial.print("   -> IMU Yaw: "); Serial.print(myIMU.yaw, 2);
+                    Serial.print(" Pitch: ");        Serial.print(myIMU.pitch, 2);
+                    Serial.print(" AccY: ");         Serial.println(myIMU.accY, 2);
+                }
+                if (tofOK && myToF.count > 0) {
+                    Serial.print("   -> ToF Tracking Distance: "); 
+                    Serial.print(myToF.targets[0].distance); 
+                    Serial.println("mm");
+                }
+                
+                // Output Vision Telemetry
+                Serial.print("   -> Vision | Error: "); Serial.print(rpiInterface.getPixelError());
+                Serial.print(" | Green Code: "); Serial.println(rpiInterface.getGreenCode());
             }
         }
     }
+    
+    // Critical: Yield time to the RP2350 USB background stack to prevent crashes
+    yield();
 }

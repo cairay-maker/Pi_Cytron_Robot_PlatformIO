@@ -13,6 +13,11 @@ public:
     void update();
     void processCommand(String debugCmd);
     
+    // Add reference to Line_Processor to route PID commands
+    void setLineProcessorRef(class Line_Processor* lp);
+    // Add reference to RPi_Interface to route Mock Vision commands
+    void setRPiInterfaceRef(class RPi_Interface* rpi);
+
     bool isVirtualStartPressed();
     bool isVirtualStopPressed();
 
@@ -20,6 +25,9 @@ private:
     Camera_Mount& _camMount;
     Ball_Handler& _ballHandler;
     Motor_Control& _motors;
+
+    class Line_Processor* _lineProcessor = nullptr;
+    class RPi_Interface*  _rpiInterface  = nullptr;
 
     bool& _simMode;
     bool& _requireStartButton;

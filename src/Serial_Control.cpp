@@ -1,4 +1,6 @@
 #include "Serial_Control.h"
+#include "RPi_Interface.h"
+#include "Line_Processor.h"
 
 Serial_Control::Serial_Control(Camera_Mount& camMount, Ball_Handler& ballHandler, Motor_Control& motors, bool& simMode, bool& requireStartButton, bool& enablePrint, bool& motorEnable)
     : _camMount(camMount), _ballHandler(ballHandler), _motors(motors),
@@ -6,6 +8,14 @@ Serial_Control::Serial_Control(Camera_Mount& camMount, Ball_Handler& ballHandler
 
 void Serial_Control::begin() {
     Serial.println("Serial_Control: Initialized and listening for commands.");
+}
+
+void Serial_Control::setLineProcessorRef(Line_Processor* lp) {
+    _lineProcessor = lp;
+}
+
+void Serial_Control::setRPiInterfaceRef(RPi_Interface* rpi) {
+    _rpiInterface = rpi;
 }
 
 void Serial_Control::update() {
@@ -118,6 +128,35 @@ void Serial_Control::processCommand(String debugCmd) {
                         Serial.println(">>> Motor Output: OFF (Manual placement mode)");
                     } else {
                         Serial.println(">>> Error: Invalid MOTOR argument (Expected ON or OFF).");
+                    }
+                } else if (key == "MOCK_V") {
+                    if (_rpiInterface != nullptr) {
+                        int commaIndex = value.indexOf(',');
+                        if (commaIndex != -1) {
+                            int err = value.substring(0, commaIndex).toInt();
+                            int green = value.substring(commaIndex + 1).toInt();
+                            _rpiInterface->setMockVision(err, green);
+                        } else {
+                            Serial.println(">>> Error: Invalid MOCK_V format (Expected MOCK_V:error,greencode).");
+                        }
+                    } else {
+                        Serial.println(">>> Error: RPi Interface reference not set.");
+                    }
+                } else if (key == "PID") {
+                    if (_lineProcessor != nullptr) {
+                        // Expected format PID:1.5,0.2,80 (Kp, Kd, BaseSpeed)
+                        int firstComma = value.indexOf(',');
+                        int secondComma = value.indexOf(',', firstComma + 1);
+                        if (firstComma != -1 && secondComma != -1) {
+                            float kp = value.substring(0, firstComma).toFloat();
+                            float kd = value.substring(firstComma + 1, secondComma).toFloat();
+                            int base = value.substring(secondComma + 1).toInt();
+                            _lineProcessor->setPID(kp, kd, base);
+                        } else {
+                            Serial.println(">>> Error: Invalid PID format (Expected PID:Kp,Kd,BaseSpeed).");
+                        }
+                    } else {
+                        Serial.println(">>> Error: Line Processor reference not set.");
                     }
                 } else if (key == "TESTDRIVE") {
                     // Parse "L_SPEED,R_SPEED,TIME_MS" -> e.g. TESTDRIVE:50,50,5000

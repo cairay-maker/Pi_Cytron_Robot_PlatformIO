@@ -9,7 +9,10 @@
 class Drive_Controller {
 public:
     Drive_Controller(Motor_Control& motorRef, IMU_Control& imuRef);
-    void executeTrajectory(SystemState mainState, SubStatus subState);
+    
+    // Add an overload to allow Line_Processor to feed direct motor speeds
+    void executeTrajectory(SystemState mainState, SubStatus subState, int overrideSpeedL = 0, int overrideSpeedR = 0);
+    
     bool executeAvoidanceManeuver(bool avoidRight); // Changed to return a success/abort flag
 
 private:
