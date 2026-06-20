@@ -129,8 +129,8 @@ void setup() {
     for (int i = 0; i < 3; i++) {
         resetToF();
         delay(100);
-        // BYPASS: Temporarily skip ToF hardware init to prevent I2C hangs
-        if (false && tof.begin(Wire)) {
+        // Hardware Init
+        if (tof.begin(Wire)) {
             tofOK = true;
             Serial.println("ToF Init Match -> SUCCESS\n");
             break;
@@ -142,8 +142,8 @@ void setup() {
     // 5. IMU Boot Checklist Sequence (3 Retries)
     Serial.println("Initializing IMU Sensor Module...");
     for (int i = 0; i < 3; i++) {
-        // BYPASS: Temporarily skip IMU hardware init to prevent I2C hangs
-        if (false && imu.begin(Wire1)) {
+        // Hardware Init
+        if (imu.begin(Wire1)) {
             imuOK = true;
             Serial.println("IMU Init Match -> SUCCESS\n");
             break;

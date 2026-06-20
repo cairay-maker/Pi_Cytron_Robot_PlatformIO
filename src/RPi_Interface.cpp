@@ -3,19 +3,20 @@
 RPi_Interface::RPi_Interface() {}
 
 void RPi_Interface::begin() {
-    // Hardware UART1 is configured on GP6(TX) and GP7(RX)
-    // The Pi should communicate at 115200 baud
-    Serial1.setTX(6);
-    Serial1.setRX(7);
+    // Hardware UART1 is now configured on GP4(TX) and GP5(RX)
+    // DUMMY MODE: Hardware calls are commented out to test for lockups
     
-    // Enable internal pull-up resistor on RX pin to prevent floating noise
-    pinMode(7, INPUT_PULLUP);
+    // Serial1.setTX(4);
+    // Serial1.setRX(5);
+    // pinMode(5, INPUT_PULLUP);
+    // Serial1.begin(115200);
     
-    Serial1.begin(115200);
-    Serial.println("RPi Interface: Hardware UART1 initialized on GP6/GP7 (with Pull-Up)");
+    Serial.println("RPi Interface: DUMMY MODE (Hardware UART Disabled to test IRQ conflicts)");
 }
 
 void RPi_Interface::update() {
+    // DUMMY MODE: Hardware read loop is bypassed to test for lockups
+    /*
     int bytesRead = 0;
     // Cap reading at 64 bytes per loop to prevent infinite noise lockups
     while (Serial1.available() > 0 && bytesRead < 64) {
@@ -32,6 +33,7 @@ void RPi_Interface::update() {
             _buffer[_bufIndex++] = inChar;
         }
     }
+    */
 }
 
 void RPi_Interface::parsePacket() {

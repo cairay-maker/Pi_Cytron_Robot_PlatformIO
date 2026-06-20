@@ -18,6 +18,8 @@ public:
     void setMockVision(int error, int greenCode);
 
 private:
+    // Initial boot state values. 
+    // Setting these to 0 assumes the robot starts perfectly centered on a straight line.
     int _currentError = 0;
     int _currentGreenCode = 0;
     bool _isFresh = false;

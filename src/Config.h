@@ -13,10 +13,10 @@ constexpr int TOF_MAX_VALID_DIST_MM          = 500; // Ignore readings above thi
 constexpr int BASE_TRACKING_SPEED            = 60;  // Normal line tracing speed (0-255)
 
 // --- Vision Control / PID Parameters ---
-constexpr float DEFAULT_LINE_KP              = 0.5f; // Proportional tuning
-constexpr float DEFAULT_LINE_KD              = 0.2f; // Derivative tuning
+constexpr float DEFAULT_LINE_KP              = 0.2f; // Proportional tuning
+constexpr float DEFAULT_LINE_KD              = 0.1f; // Derivative tuning
 constexpr int   LINE_MAX_PIXEL_OFFSET        = 320;  // Assume 640px wide camera, so 320 is edge
-constexpr int   GREEN_TURN_BIAS              = 150;  // Artificial offset injected for a green square turn
+constexpr int   GREEN_TURN_BIAS              = 140;  // Artificial offset injected for a green square turn
 constexpr int   GREEN_DEBOUNCE_FRAMES        = 3;    // How many frames in a row the Pi must see green
 
 // --- Obstacle Avoidance Arc Parameters ---

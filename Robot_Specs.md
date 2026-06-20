@@ -63,3 +63,46 @@ Use the Serial Monitor to run these exact diagnostic timed tests.
 | 100% (Full) | L:20, R:100 | 10000 | 15.0 | 7.5 |
 
 *Note: This curve trajectory successfully navigates around a standard 10cm-wide bottle obstacle.*
+
+---
+
+## 4. Raspberry Pi OpenCV Vision Integration
+The Cytron RP2350 serves as the motor and hardware controller, while the Raspberry Pi acts as the "Vision Brain" using OpenCV. They communicate serially over a high-speed hardware UART.
+
+### Hardware Interface Map
+*   **Protocol:** Serial UART (115200 baud)
+*   **RPi TX (Pin 8 / GPIO 14)** → **Cytron RX (GP5 / UART1 RX)**
+*   **RPi RX (Pin 10 / GPIO 15)** → **Cytron TX (GP4 / UART1 TX)**
+*   **Common Ground:** Mandatory wire between RPi Pin 6 and Cytron GND.
+
+*(Note: The Cytron RX pin has its internal `INPUT_PULLUP` enabled in software to prevent floating electrical noise from locking up the processor when the Pi is disconnected).*
+
+### The OpenCV Vision Contract
+The Python script on the Raspberry Pi must send data in the following format exactly 30 times per second:
+`V:<pixel_error>,<green_code>\n`
+
+*   **`<pixel_error>`**: An integer from roughly `-320` to `320`. 
+    *   `0` = Robot perfectly centered on line.
+    *   Positive Number = Line is to the right.
+    *   Negative Number = Line is to the left.
+*   **`<green_code>`**: 
+    *   `0` = No green square detected.
+    *   `1` = Left green square detected.
+    *   `2` = Right green square detected.
+    *   `3` = U-Turn.
+    
+**Crucial OpenCV Strategy (Region of Interest):** To prevent the robot from reacting to upcoming corners too early, the OpenCV script must crop the camera frame to a narrow "letterbox" (e.g., the bottom 40 pixels of a 320x180 frame) so it only evaluates the line directly in front of the wheels.
+
+### Proportional-Derivative (PD) Tuning
+The Cytron calculates the required motor speeds using a PD controller (`Line_Processor.cpp`).
+*   `DEFAULT_LINE_KP = 0.2` (Proportional: How hard it steers)
+*   `DEFAULT_LINE_KD = 0.1` (Derivative: How hard it resists sudden changes)
+*   `BASE_TRACKING_SPEED = 60` (Cruising speed)
+*   `GREEN_TURN_BIAS = 140` (Artificial error injected to force a tight 90-degree pivot without stopping)
+
+### Live Desktop Tuning Commands
+You can tune the robot's vision math via the PlatformIO Serial Monitor (USB-C) without recompiling, bypassing the Pi entirely!
+*   **`RUN:ON`** - Starts the main execution loop.
+*   **`MOTOR:OFF`** - Keeps wheels safe on the desk while allowing math output.
+*   **`MOCK_V:60,2`** - Injects a fake Vision packet (e.g., Error 60, Green Right) to test the PD math.
+*   **`PID:0.25,0.15,60`** - Updates `Kp`, `Kd`, and `BaseSpeed` on the fly.

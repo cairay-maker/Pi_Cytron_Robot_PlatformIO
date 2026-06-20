@@ -5,8 +5,8 @@
 #include <Servo.h>
 #include "Data_Structures.h"
 
-const int PIN_GRIP_ARM  = 4;  // GP4: Ball Handler Lift Arm; lower value lifts up, higher value puts it down
-const int PIN_GRIP_CLAW = 5;  // GP5: Ball Handler Claw Jaws: lower value closes, higher value open
+const int PIN_GRIP_ARM  = 6;  // GP6: Ball Handler Lift Arm; lower value lifts up, higher value puts it down
+const int PIN_GRIP_CLAW = 7;  // GP7: Ball Handler Claw Jaws: lower value closes, higher value open
 
 struct GripperJoint {
     uint8_t pin;       // Dedicated tracking pin
